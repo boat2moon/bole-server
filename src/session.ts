@@ -74,6 +74,7 @@ export class RealtimeSession {
     const url = new URL(request.url);
     const config: DoubaoSessionConfig = {
       apiKey: url.searchParams.get("apiKey") || "",
+      appId: url.searchParams.get("appId") || "",
       systemPrompt: url.searchParams.get("systemPrompt") || "",
       voice: url.searchParams.get("voice") || "",
     };

@@ -55,10 +55,14 @@ export function getDoubaoConnectionInfo(config: DoubaoSessionConfig): {
   return {
     url: DOUBAO_WS_URL,
     headers: {
-      "X-Api-App-Key": config.apiKey,
+      // App ID（从火山引擎控制台-语音技术-应用管理获取）
+      "X-Api-App-Key": config.appId || "",
+      // Access Token / API Key
       "X-Api-Access-Key": config.apiKey,
-      "X-Api-Resource-Id": config.resourceId || "volc.service.speech_realtime_dialogue",
-      "X-Api-App-ID": config.appId || "",
+      // 固定值：实时语音对话服务
+      "X-Api-Resource-Id": "volc.speech.dialog",
+      // 可选：连接追踪 ID（方便排查问题）
+      "X-Api-Connect-Id": `bole-${Date.now()}`,
     },
   };
 }

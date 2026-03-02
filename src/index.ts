@@ -19,6 +19,7 @@ export { RealtimeSession };
 export interface Env {
   REALTIME_SESSION: DurableObjectNamespace;
   DOUBAO_API_KEY: string;
+  DOUBAO_APP_ID: string;
   SESSION_SECRET: string;
 }
 
@@ -80,6 +81,7 @@ async function handleRealtimeWebSocket(
   doUrl.searchParams.set("model", sessionData.model);
   doUrl.searchParams.set("voice", sessionData.voice || "");
   doUrl.searchParams.set("apiKey", env.DOUBAO_API_KEY);
+  doUrl.searchParams.set("appId", env.DOUBAO_APP_ID);
 
   const doRequest = new Request(doUrl.toString(), request);
   return stub.fetch(doRequest);
