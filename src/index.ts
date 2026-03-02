@@ -80,8 +80,13 @@ async function handleRealtimeWebSocket(
   doUrl.searchParams.set("systemPrompt", sessionData.systemPrompt);
   doUrl.searchParams.set("model", sessionData.model);
   doUrl.searchParams.set("voice", sessionData.voice || "");
-  doUrl.searchParams.set("apiKey", env.DOUBAO_API_KEY);
-  doUrl.searchParams.set("appId", env.DOUBAO_APP_ID);
+  const apiKey = (env.DOUBAO_API_KEY || "").trim();
+  const appId = (env.DOUBAO_APP_ID || "").trim();
+  
+  console.log(`[Worker] passing secrets to DO. API_KEY length: ${apiKey.length}, APP_ID: ${appId}`);
+
+  doUrl.searchParams.set("apiKey", apiKey);
+  doUrl.searchParams.set("appId", appId);
 
   const doRequest = new Request(doUrl.toString(), request);
   return stub.fetch(doRequest);

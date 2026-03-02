@@ -114,21 +114,25 @@ export function getDoubaoConnectionInfo(config: DoubaoSessionConfig): {
   url: string;
   headers: Record<string, string>;
 } {
-  return {
-    url: DOUBAO_WS_URL,
-    headers: {
+    const headers = {
       // App ID（从火山引擎控制台获取）
       "X-Api-App-ID": config.appId || "",
       // Access Token / API Key
-      "X-Api-Access-Key": config.apiKey,
+      "X-Api-Access-Key": config.apiKey || "",
       // 固定值：实时语音对话服务
       "X-Api-Resource-Id": "volc.speech.dialog",
       // 固定值（文档指定）
       "X-Api-App-Key": "PlgvMymc7f3tQnJ6",
       // 可选：连接追踪 ID
       "X-Api-Connect-Id": `bole-${Date.now()}`,
-    },
-  };
+    };
+
+    console.log(`[Doubao] Connecting headers -> App-ID: ${headers["X-Api-App-ID"]}, API-Key length: ${headers["X-Api-Access-Key"]?.length}`);
+
+    return {
+      url: DOUBAO_WS_URL,
+      headers,
+    };
 }
 
 // ===================== 客户端消息构建 =====================
