@@ -261,12 +261,13 @@ export class RealtimeSession {
         break;
 
       case "tts_sentence_start":
-        // TTS 开始合成一句话，包含文本
+        // TTS 开始合成一句话，包含完整句子文本
         if (parsed.text) {
           this.sendToClient({
             type: "transcript",
             role: "assistant",
             text: parsed.text,
+            isFinal: true,
           });
         }
         break;
@@ -283,12 +284,22 @@ export class RealtimeSession {
       case "asr_response":
         // 用户语音识别结果
         if (parsed.text) {
-          this.sendToClient({
-            type: "transcript",
-            role: "user",
-            text: parsed.text,
-            isInterim: parsed.isInterim,
-          });
+          if (parsed.isInterim) {
+            // 中间结果：更新前端上一条 user 消息（而非新增）
+            this.sendToClient({
+              type: "transcript_update",
+              role: "user",
+              text: parsed.text,
+            });
+          } else {
+            // 最终结果：确认这条 user 消息
+            this.sendToClient({
+              type: "transcript",
+              role: "user",
+              text: parsed.text,
+              isFinal: true,
+            });
+          }
         }
         break;
 
@@ -297,10 +308,10 @@ export class RealtimeSession {
         break;
 
       case "chat_response":
-        // LLM 文本响应
+        // LLM 文本响应（碎片式流式返回，追加到最后一条助手消息）
         if (parsed.text) {
           this.sendToClient({
-            type: "transcript",
+            type: "transcript_delta",
             role: "assistant",
             text: parsed.text,
           });
