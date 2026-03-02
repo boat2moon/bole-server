@@ -14,6 +14,5 @@ new_classes = ["RealtimeSession"]
 
 # 环境变量占位（部署时通过 wrangler secret 设置）
 [vars]
-# GEMINI_API_KEY = "通过 wrangler secret put GEMINI_API_KEY 设置"
-# BOLETALK_AGENT_URL = "https://your-boletalk-agent.example.com"
+# DOUBAO_API_KEY = "通过 wrangler secret put DOUBAO_API_KEY 设置"
 # SESSION_SECRET = "用于验证 JWT token 的密钥"

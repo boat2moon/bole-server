@@ -3,23 +3,30 @@
  *
  * 管理单个实时语音面试会话的完整生命周期：
  * 1. 接受客户端 WebSocket 连接
- * 2. 建立与 Gemini Live API 的 WebSocket 连接
- * 3. 双向透传音频数据
+ * 2. 建立与豆包实时语音 API 的 WebSocket 连接
+ * 3. 双向透传音频数据（客户端 base64 ↔ 豆包二进制协议）
  * 4. 处理面试中断、超时等异常情况
  *
- * 使用 Durable Object 而不是普通 Worker 的原因：
- * - DO 可以持有 WebSocket 长连接不被回收
- * - DO 实例是有状态的，可以跟踪会话状态
- * - 每个面试会话对应一个 DO 实例，天然隔离
+ * 数据流转换：
+ * 客户端 → JSON { type: "audio", data: base64 }
+ *        → 解码为 PCM ArrayBuffer
+ *        → 包装为豆包二进制协议
+ *        → 发送给豆包
+ *
+ * 豆包 → 二进制协议（音频/JSON事件）
+ *      → 解析为 DoubaoResponse
+ *      → 转换为 JSON { type: "audio"/"transcript"/... }
+ *      → 发送给客户端
  */
 
 import {
-  type GeminiSessionConfig,
-  buildAudioInputMessage,
-  buildSetupMessage,
-  connectToGemini,
-  parseGeminiMessage,
-} from "./gemini";
+  type DoubaoSessionConfig,
+  buildAudioMessage,
+  buildFinishSessionMessage,
+  buildStartSessionMessage,
+  getDoubaoConnectionInfo,
+  parseDoubaoMessage,
+} from "./doubao";
 
 /** 面试会话最大时长：30 分钟 */
 const MAX_SESSION_DURATION_MS = 30 * 60 * 1000;
@@ -32,10 +39,10 @@ export class RealtimeSession {
 
   /** 客户端（浏览器）WebSocket */
   private clientWs: WebSocket | null = null;
-  /** Gemini Live API WebSocket */
-  private geminiWs: WebSocket | null = null;
+  /** 豆包实时语音 API WebSocket */
+  private doubaoWs: WebSocket | null = null;
 
-  /** 会话是否已初始化 */
+  /** 会话是否已初始化（收到 SessionStarted） */
   private initialized = false;
   /** 会话开始时间 */
   private sessionStartTime = 0;
@@ -50,12 +57,8 @@ export class RealtimeSession {
 
   /**
    * DO 的 HTTP fetch 处理器
-   *
-   * 由 Worker 入口转发过来，这里处理 WebSocket 升级和音频透传
    */
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
     // 检查是否为 WebSocket 升级请求
     const upgradeHeader = request.headers.get("Upgrade");
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
@@ -68,11 +71,11 @@ export class RealtimeSession {
     }
 
     // 提取会话配置（由 Worker 入口写入 URL 参数）
-    const config: GeminiSessionConfig = {
+    const url = new URL(request.url);
+    const config: DoubaoSessionConfig = {
       apiKey: url.searchParams.get("apiKey") || "",
-      model: url.searchParams.get("model") || "gemini-2.0-flash-live",
       systemPrompt: url.searchParams.get("systemPrompt") || "",
-      voice: url.searchParams.get("voice") || "Aoede",
+      voice: url.searchParams.get("voice") || "",
     };
 
     // 创建 WebSocket pair（Cloudflare 特有 API）
@@ -83,8 +86,8 @@ export class RealtimeSession {
     this.state.acceptWebSocket(server);
     this.clientWs = server;
 
-    // 初始化 Gemini 连接
-    this.initGeminiConnection(config);
+    // 初始化豆包连接
+    this.initDoubaoConnection(config);
 
     // 设置会话超时
     this.sessionStartTime = Date.now();
@@ -103,39 +106,48 @@ export class RealtimeSession {
   }
 
   /**
-   * 建立与 Gemini Live API 的 WebSocket 连接
+   * 建立与豆包实时语音 API 的 WebSocket 连接
    */
-  private initGeminiConnection(config: GeminiSessionConfig): void {
+  private initDoubaoConnection(config: DoubaoSessionConfig): void {
     try {
-      this.geminiWs = connectToGemini(config);
+      const connInfo = getDoubaoConnectionInfo(config);
 
-      this.geminiWs.addEventListener("open", () => {
-        console.log("[Gemini] WebSocket connected");
-        // 发送 setup 消息
-        const setupMsg = buildSetupMessage(config);
-        this.geminiWs?.send(setupMsg);
+      // Cloudflare Workers 的 WebSocket 构造函数支持传 headers
+      // 通过 subprotocol 或 Fetch API 实现
+      // 豆包认证通过 Header 传递，CF Worker 中用 fetch + upgrade
+      const ws = new WebSocket(connInfo.url, {
+        headers: connInfo.headers,
+      } as unknown as string[]);
+
+      this.doubaoWs = ws;
+
+      ws.addEventListener("open", () => {
+        console.log("[Doubao] WebSocket connected");
+        // 发送 StartSession 消息
+        const startMsg = buildStartSessionMessage(config);
+        ws.send(startMsg);
       });
 
-      this.geminiWs.addEventListener("message", (event) => {
-        this.handleGeminiMessage(event);
+      ws.addEventListener("message", (event) => {
+        this.handleDoubaoMessage(event);
       });
 
-      this.geminiWs.addEventListener("close", (event) => {
+      ws.addEventListener("close", (event) => {
         console.log(
-          `[Gemini] WebSocket closed: ${event.code} ${event.reason}`
+          `[Doubao] WebSocket closed: ${event.code} ${event.reason}`
         );
-        this.endSession("Gemini 连接断开");
+        this.endSession("豆包连接断开");
       });
 
-      this.geminiWs.addEventListener("error", (event) => {
-        console.error("[Gemini] WebSocket error:", event);
+      ws.addEventListener("error", (event) => {
+        console.error("[Doubao] WebSocket error:", event);
         this.sendToClient({
           type: "error",
-          message: "Gemini 连接异常",
+          message: "豆包语音连接异常",
         });
       });
     } catch (error) {
-      console.error("[Gemini] Failed to connect:", error);
+      console.error("[Doubao] Failed to connect:", error);
       this.sendToClient({
         type: "error",
         message: "无法连接到语音模型",
@@ -144,53 +156,81 @@ export class RealtimeSession {
   }
 
   /**
-   * 处理 Gemini 返回的消息，透传给客户端
+   * 处理豆包返回的消息，解析二进制协议并透传给客户端
    */
-  private handleGeminiMessage(event: MessageEvent): void {
-    if (typeof event.data !== "string") {
+  private handleDoubaoMessage(event: MessageEvent): void {
+    let data: ArrayBuffer;
+
+    if (event.data instanceof ArrayBuffer) {
+      data = event.data;
+    } else if (event.data instanceof Blob) {
+      // Blob → ArrayBuffer（异步）
+      event.data.arrayBuffer().then((buf) => {
+        this.processDoubaoData(buf);
+      });
+      return;
+    } else {
+      // 字符串消息（不常见但需要处理）
+      console.log("[Doubao] String message:", event.data);
       return;
     }
 
-    const parsed = parseGeminiMessage(event.data);
+    this.processDoubaoData(data);
+  }
+
+  /**
+   * 处理解析后的豆包数据
+   */
+  private processDoubaoData(data: ArrayBuffer): void {
+    const parsed = parseDoubaoMessage(data);
 
     switch (parsed.type) {
-      case "setupComplete":
+      case "session_started":
         // 通知客户端连接就绪，可以开始说话
         this.initialized = true;
-        this.sendToClient({ type: "ready" });
+        this.sendToClient({
+          type: "ready",
+          sessionId: parsed.sessionId,
+        });
         break;
 
       case "audio":
-        // 透传音频数据给客户端
+        // 将二进制音频转为 base64 透传给客户端
         this.sendToClient({
           type: "audio",
-          data: parsed.data,
-          mimeType: parsed.mimeType,
+          data: arrayBufferToBase64(parsed.data),
+          mimeType: "audio/pcm;rate=24000",
         });
         break;
 
       case "text":
-        // 透传文本（实时字幕/transcript）
+        // 实时字幕（ASR 用户语音识别 / LLM 文本响应）
         this.sendToClient({
           type: "transcript",
-          role: "assistant",
+          role: parsed.role,
           text: parsed.text,
         });
         break;
 
-      case "turnComplete":
-        // 模型说完一轮
+      case "turn_complete":
         this.sendToClient({ type: "turnComplete" });
         break;
 
-      case "interrupted":
-        // 用户打断了模型
-        this.sendToClient({ type: "interrupted" });
+      case "session_finished":
+        this.endSession("面试结束");
+        break;
+
+      case "error":
+        console.error(`[Doubao Error] ${parsed.code}: ${parsed.message}`);
+        this.sendToClient({
+          type: "error",
+          message: `语音模型错误: ${parsed.message}`,
+        });
         break;
 
       default:
-        // 未知消息类型，记录日志但不转发
-        console.log("[Gemini] Unknown message:", parsed);
+        // 未知消息类型，忽略
+        break;
     }
   }
 
@@ -211,20 +251,27 @@ export class RealtimeSession {
 
       switch (data.type) {
         case "audio":
-          // 客户端发送的音频数据，转发给 Gemini
-          if (this.initialized && this.geminiWs?.readyState === WebSocket.OPEN) {
-            const geminiMsg = buildAudioInputMessage(data.data);
-            this.geminiWs.send(geminiMsg);
+          // 客户端发送的 base64 音频数据，解码后用豆包二进制协议发送
+          if (
+            this.initialized &&
+            this.doubaoWs?.readyState === WebSocket.OPEN
+          ) {
+            const pcmData = base64ToArrayBuffer(data.data);
+            const binaryMsg = buildAudioMessage(pcmData);
+            this.doubaoWs.send(binaryMsg);
           }
           break;
 
         case "end":
           // 客户端主动结束面试
+          if (this.doubaoWs?.readyState === WebSocket.OPEN) {
+            const finishMsg = buildFinishSessionMessage();
+            this.doubaoWs.send(finishMsg);
+          }
           this.endSession("用户主动结束");
           break;
 
         case "ping":
-          // 心跳
           this.sendToClient({ type: "pong" });
           break;
 
@@ -258,7 +305,7 @@ export class RealtimeSession {
   }
 
   /**
-   * 向客户端发送消息
+   * 向客户端发送 JSON 消息
    */
   private sendToClient(data: Record<string, unknown>): void {
     try {
@@ -308,17 +355,15 @@ export class RealtimeSession {
       this.sessionTimer = null;
     }
 
-    // 关闭 Gemini WebSocket
     try {
-      if (this.geminiWs?.readyState === WebSocket.OPEN) {
-        this.geminiWs.close(1000, "Session ended");
+      if (this.doubaoWs?.readyState === WebSocket.OPEN) {
+        this.doubaoWs.close(1000, "Session ended");
       }
     } catch {
       /* ignore */
     }
-    this.geminiWs = null;
+    this.doubaoWs = null;
 
-    // 关闭客户端 WebSocket
     try {
       if (this.clientWs?.readyState === WebSocket.OPEN) {
         this.clientWs.close(1000, "Session ended");
@@ -330,4 +375,24 @@ export class RealtimeSession {
 
     this.initialized = false;
   }
+}
+
+// ===================== 工具函数 =====================
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }

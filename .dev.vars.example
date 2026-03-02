@@ -1,2 +1,2 @@
-# GEMINI_API_KEY=your-gemini-api-key
-# SESSION_SECRET=your-session-secret-for-jwt
+DOUBAO_API_KEY=your-doubao-api-key
+SESSION_SECRET=your-session-secret

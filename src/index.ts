@@ -8,7 +8,7 @@
  * 请求流程：
  * 1. 前端发起 WebSocket 升级请求，携带 sessionToken
  * 2. Worker 验证 token，创建/获取 DO 实例
- * 3. DO 内部建立与 Gemini Live API 的 WebSocket 连接
+ * 3. DO 内部建立与豆包实时语音 API 的 WebSocket 连接
  * 4. 双向透传音频数据
  */
 
@@ -18,7 +18,7 @@ export { RealtimeSession };
 
 export interface Env {
   REALTIME_SESSION: DurableObjectNamespace;
-  GEMINI_API_KEY: string;
+  DOUBAO_API_KEY: string;
   SESSION_SECRET: string;
 }
 
@@ -78,8 +78,8 @@ async function handleRealtimeWebSocket(
   const doUrl = new URL(request.url);
   doUrl.searchParams.set("systemPrompt", sessionData.systemPrompt);
   doUrl.searchParams.set("model", sessionData.model);
-  doUrl.searchParams.set("voice", sessionData.voice || "Aoede");
-  doUrl.searchParams.set("apiKey", env.GEMINI_API_KEY);
+  doUrl.searchParams.set("voice", sessionData.voice || "");
+  doUrl.searchParams.set("apiKey", env.DOUBAO_API_KEY);
 
   const doRequest = new Request(doUrl.toString(), request);
   return stub.fetch(doRequest);
