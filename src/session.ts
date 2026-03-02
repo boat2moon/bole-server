@@ -7,22 +7,19 @@
  * 3. 双向透传音频数据（客户端 base64 ↔ 豆包二进制协议）
  * 4. 处理面试中断、超时等异常情况
  *
- * 数据流转换：
- * 客户端 → JSON { type: "audio", data: base64 }
- *        → 解码为 PCM ArrayBuffer
- *        → 包装为豆包二进制协议
- *        → 发送给豆包
- *
- * 豆包 → 二进制协议（音频/JSON事件）
- *      → 解析为 DoubaoResponse
- *      → 转换为 JSON { type: "audio"/"transcript"/... }
- *      → 发送给客户端
+ * 协议流程：
+ * 1. 建立 WebSocket 连接 → 发送 StartConnection
+ * 2. 收到 ConnectionStarted → 发送 StartSession
+ * 3. 收到 SessionStarted → 通知客户端 ready
+ * 4. 客户端发送音频 → 转为 TaskRequest 发给豆包
+ * 5. 豆包返回事件 → 解析后透传给客户端
  */
 
 import {
   type DoubaoSessionConfig,
   buildAudioMessage,
   buildFinishSessionMessage,
+  buildStartConnectionMessage,
   buildStartSessionMessage,
   getDoubaoConnectionInfo,
   parseDoubaoMessage,
@@ -50,6 +47,10 @@ export class RealtimeSession {
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   /** 会话超时计时器 */
   private sessionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 会话 ID（UUID，用于二进制协议） */
+  private sessionId = "";
+  /** 面试配置（StartSession 需要） */
+  private sessionConfig: DoubaoSessionConfig | null = null;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -72,11 +73,16 @@ export class RealtimeSession {
 
     // 提取会话配置（由 Worker 入口写入 URL 参数）
     const url = new URL(request.url);
-    const config: DoubaoSessionConfig = {
+
+    // 生成 session ID (UUID)
+    this.sessionId = crypto.randomUUID();
+
+    this.sessionConfig = {
       apiKey: url.searchParams.get("apiKey") || "",
       appId: url.searchParams.get("appId") || "",
       systemPrompt: url.searchParams.get("systemPrompt") || "",
       voice: url.searchParams.get("voice") || "",
+      sessionId: this.sessionId,
     };
 
     // 创建 WebSocket pair（Cloudflare 特有 API）
@@ -88,7 +94,7 @@ export class RealtimeSession {
     this.clientWs = server;
 
     // 初始化豆包连接
-    this.initDoubaoConnection(config);
+    this.initDoubaoConnection(this.sessionConfig);
 
     // 设置会话超时
     this.sessionStartTime = Date.now();
@@ -140,9 +146,10 @@ export class RealtimeSession {
       this.doubaoWs = ws;
       console.log("[Doubao] WebSocket connected");
 
-      // 发送 StartSession 消息
-      const startMsg = buildStartSessionMessage(config);
-      ws.send(startMsg);
+      // 第一步：发送 StartConnection
+      const startConnMsg = buildStartConnectionMessage();
+      ws.send(startConnMsg);
+      console.log("[Doubao] Sent StartConnection");
 
       ws.addEventListener("message", (event) => {
         this.handleDoubaoMessage(event);
@@ -202,13 +209,46 @@ export class RealtimeSession {
     const parsed = parseDoubaoMessage(data);
 
     switch (parsed.type) {
+      case "connection_started":
+        // 连接建立成功，发送 StartSession
+        console.log("[Doubao] ConnectionStarted, sending StartSession");
+        if (this.doubaoWs && this.sessionConfig) {
+          const startSessionMsg = buildStartSessionMessage(this.sessionConfig);
+          this.doubaoWs.send(startSessionMsg);
+          console.log("[Doubao] Sent StartSession with sessionId:", this.sessionId);
+        }
+        break;
+
+      case "connection_failed":
+        console.error("[Doubao] ConnectionFailed:", parsed.error);
+        this.sendToClient({
+          type: "error",
+          message: `语音模型连接失败: ${parsed.error}`,
+        });
+        this.endSession("豆包连接失败");
+        break;
+
       case "session_started":
         // 通知客户端连接就绪，可以开始说话
         this.initialized = true;
+        console.log("[Doubao] SessionStarted, dialogId:", parsed.dialogId);
         this.sendToClient({
           type: "ready",
           sessionId: parsed.sessionId,
         });
+        break;
+
+      case "session_finished":
+        this.endSession("面试结束");
+        break;
+
+      case "session_failed":
+        console.error("[Doubao] SessionFailed:", parsed.error);
+        this.sendToClient({
+          type: "error",
+          message: `会话失败: ${parsed.error}`,
+        });
+        this.endSession("豆包会话失败");
         break;
 
       case "audio":
@@ -220,21 +260,55 @@ export class RealtimeSession {
         });
         break;
 
-      case "text":
-        // 实时字幕（ASR 用户语音识别 / LLM 文本响应）
-        this.sendToClient({
-          type: "transcript",
-          role: parsed.role,
-          text: parsed.text,
-        });
+      case "tts_sentence_start":
+        // TTS 开始合成一句话，包含文本
+        if (parsed.text) {
+          this.sendToClient({
+            type: "transcript",
+            role: "assistant",
+            text: parsed.text,
+          });
+        }
         break;
 
-      case "turn_complete":
+      case "tts_ended":
         this.sendToClient({ type: "turnComplete" });
         break;
 
-      case "session_finished":
-        this.endSession("面试结束");
+      case "asr_info":
+        // 检测到用户开始说话，可用于打断播放
+        this.sendToClient({ type: "userSpeaking" });
+        break;
+
+      case "asr_response":
+        // 用户语音识别结果
+        if (parsed.text) {
+          this.sendToClient({
+            type: "transcript",
+            role: "user",
+            text: parsed.text,
+            isInterim: parsed.isInterim,
+          });
+        }
+        break;
+
+      case "asr_ended":
+        // 用户说话结束
+        break;
+
+      case "chat_response":
+        // LLM 文本响应
+        if (parsed.text) {
+          this.sendToClient({
+            type: "transcript",
+            role: "assistant",
+            text: parsed.text,
+          });
+        }
+        break;
+
+      case "chat_ended":
+        // 模型回复结束
         break;
 
       case "error":
@@ -274,7 +348,7 @@ export class RealtimeSession {
             this.doubaoWs?.readyState === WebSocket.OPEN
           ) {
             const pcmData = base64ToArrayBuffer(data.data);
-            const binaryMsg = buildAudioMessage(pcmData);
+            const binaryMsg = buildAudioMessage(pcmData, this.sessionId);
             this.doubaoWs.send(binaryMsg);
           }
           break;
@@ -282,7 +356,7 @@ export class RealtimeSession {
         case "end":
           // 客户端主动结束面试
           if (this.doubaoWs?.readyState === WebSocket.OPEN) {
-            const finishMsg = buildFinishSessionMessage();
+            const finishMsg = buildFinishSessionMessage(this.sessionId);
             this.doubaoWs.send(finishMsg);
           }
           this.endSession("用户主动结束");
@@ -391,6 +465,7 @@ export class RealtimeSession {
     this.clientWs = null;
 
     this.initialized = false;
+    this.sessionConfig = null;
   }
 }
 
