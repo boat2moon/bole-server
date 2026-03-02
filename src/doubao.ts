@@ -26,9 +26,14 @@
  * payload 前面有 4 字节的 payload_size（大端序 uint32）
  */
 
-/** 豆包实时语音 WebSocket 端点 */
+/** 
+ * 豆包实时语音 WebSocket 端点
+ * 
+ * 注意：CF Workers 的 fetch() 不支持 wss://，
+ * 需要使用 https:// + Upgrade: websocket header
+ */
 const DOUBAO_WS_URL =
-  "wss://openspeech.bytedance.com/api/v3/realtime/dialogue";
+  "https://openspeech.bytedance.com/api/v3/realtime/dialogue";
 
 export interface DoubaoSessionConfig {
   /** API Key */
