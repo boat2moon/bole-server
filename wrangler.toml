@@ -10,7 +10,7 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RealtimeSession"]
+new_sqlite_classes = ["RealtimeSession"]
 
 # 环境变量占位（部署时通过 wrangler secret 设置）
 [vars]
