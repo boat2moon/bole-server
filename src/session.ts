@@ -107,26 +107,41 @@ export class RealtimeSession {
 
   /**
    * 建立与豆包实时语音 API 的 WebSocket 连接
+   *
+   * CF Workers 不支持 `new WebSocket(url, {headers})`，
+   * 必须使用 `fetch()` + `Upgrade: websocket` header 来建立出站 WebSocket。
    */
-  private initDoubaoConnection(config: DoubaoSessionConfig): void {
+  private async initDoubaoConnection(config: DoubaoSessionConfig): Promise<void> {
     try {
       const connInfo = getDoubaoConnectionInfo(config);
 
-      // Cloudflare Workers 的 WebSocket 构造函数支持传 headers
-      // 通过 subprotocol 或 Fetch API 实现
-      // 豆包认证通过 Header 传递，CF Worker 中用 fetch + upgrade
-      const ws = new WebSocket(connInfo.url, {
-        headers: connInfo.headers,
-      } as unknown as string[]);
-
-      this.doubaoWs = ws;
-
-      ws.addEventListener("open", () => {
-        console.log("[Doubao] WebSocket connected");
-        // 发送 StartSession 消息
-        const startMsg = buildStartSessionMessage(config);
-        ws.send(startMsg);
+      // CF Workers 建立出站 WebSocket 的标准方式
+      const resp = await fetch(connInfo.url, {
+        headers: {
+          Upgrade: "websocket",
+          ...connInfo.headers,
+        },
       });
+
+      const ws = resp.webSocket;
+      if (!ws) {
+        console.error("[Doubao] Failed to upgrade to WebSocket, status:", resp.status);
+        this.sendToClient({
+          type: "error",
+          message: `语音模型连接失败 (HTTP ${resp.status})`,
+        });
+        this.endSession("豆包 WebSocket 升级失败");
+        return;
+      }
+
+      // 接受服务端 WebSocket
+      ws.accept();
+      this.doubaoWs = ws;
+      console.log("[Doubao] WebSocket connected");
+
+      // 发送 StartSession 消息
+      const startMsg = buildStartSessionMessage(config);
+      ws.send(startMsg);
 
       ws.addEventListener("message", (event) => {
         this.handleDoubaoMessage(event);
@@ -150,8 +165,9 @@ export class RealtimeSession {
       console.error("[Doubao] Failed to connect:", error);
       this.sendToClient({
         type: "error",
-        message: "无法连接到语音模型",
+        message: `无法连接到语音模型: ${error instanceof Error ? error.message : "未知错误"}`,
       });
+      this.endSession("豆包连接失败");
     }
   }
 
