@@ -2,6 +2,10 @@ name = "bole-server"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
+# 智能放置：将 Worker 放置在最佳位置处理请求，减少后端延迟
+[placement]
+mode = "smart"
+
 # Durable Objects 绑定（用于管理 WebSocket 会话状态）
 [durable_objects]
 bindings = [
@@ -12,7 +16,11 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["RealtimeSession"]
 
+
 # 环境变量占位（部署时通过 wrangler secret 设置）
 [vars]
 # DOUBAO_API_KEY = "通过 wrangler secret put DOUBAO_API_KEY 设置"
 # SESSION_SECRET = "用于验证 JWT token 的密钥"
+# DOUBAO_VOICE_APP_ID = "豆包语音 APP ID"
+# DOUBAO_VOICE_ACCESS_TOKEN = "豆包语音 Access Token"
+
