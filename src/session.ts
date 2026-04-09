@@ -480,6 +480,15 @@ export class RealtimeSession {
   }
 }
 
+/**
+ * 兼容 Cloudflare 线上遗留的 Durable Object 类名。
+ *
+ * 历史上曾经有手动部署使用过 `ASRSession`，生产环境里仍可能存在依赖
+ * 这个类名的 Durable Objects。保留这个导出可以让当前版本继续接管这些
+ * 旧对象，同时新的绑定仍然使用 `RealtimeSession`。
+ */
+export class ASRSession extends RealtimeSession {}
+
 // ===================== 工具函数 =====================
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {

@@ -12,9 +12,7 @@
  * 4. 双向透传音频数据
  */
 
-import { RealtimeSession } from "./session";
-
-export { RealtimeSession };
+export { ASRSession, RealtimeSession } from "./session";
 
 export interface Env {
   REALTIME_SESSION: DurableObjectNamespace;
