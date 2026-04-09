@@ -16,6 +16,11 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["RealtimeSession"]
 
+[[migrations]]
+# 保留这个空迁移标签来对齐生产环境中已存在的 v2 记录。
+# 如果删除它，后续部署会把 RealtimeSession 误判为需要再次创建的新类。
+tag = "v2"
+
 
 # 环境变量占位（部署时通过 wrangler secret 设置）
 [vars]
@@ -23,4 +28,3 @@ new_sqlite_classes = ["RealtimeSession"]
 # SESSION_SECRET = "用于验证 JWT token 的密钥"
 # DOUBAO_VOICE_APP_ID = "豆包语音 APP ID"
 # DOUBAO_VOICE_ACCESS_TOKEN = "豆包语音 Access Token"
-
